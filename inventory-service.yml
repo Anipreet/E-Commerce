@@ -1,14 +1,47 @@
 server:
   port: 8082
+
 spring:
+  application:
+    name: inventory-service
+
+  security:
+    user:
+      name: admin        # Your custom username
+      password: cricket123
+
+
+  #  config:
+#    import: configserver:http://localhost:8888
+
+
   datasource:
-    url: jdbc:mysql://localhost:3306/inventorydb
+    url: jdbc:mysql://127.0.0.1:3306/inventory
     username: root
-    password: root
+    password: cricket123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: update   # or validate if you don't want schema changes
     show-sql: true
-kafka:
-  topic:
-    inventory-events: inventory-events
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+
+# Kafka configuration
+#spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: inventory-group
+      auto-offset-reset: earliest
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+# Eureka client
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/

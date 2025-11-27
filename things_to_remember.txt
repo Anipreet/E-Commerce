@@ -1,0 +1,423 @@
+Things to remember:
+
+1  CLOUD CONFIG:   in application file add:
+  cloud:
+    config:
+      server:
+        git:
+          uri: https://github.com/Anipreet/E-Commerce.git
+          default-label: main
+The name of the files on GitHub should be same as the name of microservice and add this in application file of other ms 
+spring:
+  application:
+    name: auth-service
+  config:
+    import: "configserver:http://localhost:8888"
+
+2 Authentication service: In each microservice create securityconfig class to disable the csrf to hit the endpoints and if you have added security-starter dependency then write password and user in application properties
+Jwt Classes:
+@Component
+public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
+    @Override
+    public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException) throws IOException, ServletException {
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        PrintWriter writer = response.getWriter();
+        writer.println("Access Denied !! " + authException.getMessage());
+    }
+}
+
+@Component
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    private final Logger logger = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
+
+    @Autowired
+    private JwtHelper jwtHelper;
+
+    @Autowired
+    private UserDetailsService userDetailsService;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+
+        String path = request.getServletPath();
+        // ✅ Skip JWT validation for login and register endpoints
+        if (path.startsWith("/auth/login") || path.startsWith("/auth/register")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        String requestHeader = request.getHeader("Authorization");
+        String username = null;
+        String token = null;
+
+        if (requestHeader != null && requestHeader.startsWith("Bearer ")) {
+            token = requestHeader.substring(7);
+            try {
+                username = jwtHelper.getUsernameFromToken(token);
+            } catch (IllegalArgumentException e) {
+                logger.error("Illegal Argument while fetching username from token", e);
+            } catch (ExpiredJwtException e) {
+                logger.error("JWT token expired", e);
+            } catch (MalformedJwtException e) {
+                logger.error("Invalid JWT token", e);
+            } catch (Exception e) {
+                logger.error("Error parsing JWT token", e);
+            }
+        } else {
+            logger.info("Authorization header missing or invalid");
+        }
+
+        // ✅ Validate token and set authentication
+        if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+            if (jwtHelper.validateToken(token, userDetails)) {
+                UsernamePasswordAuthenticationToken authentication =
+                        new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+                authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+            } else {
+                logger.info("JWT validation failed");
+            }
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}
+@Component
+public class JwtHelper {
+
+    // Token validity: 5 hours
+    public static final long JWT_TOKEN_VALIDITY = 5 * 60 * 60;
+
+    // Secret key (must be at least 256 bits)
+    private static final String SECRET = "afafasfafafasfasfasfafacasdasfasxASFACASDFACASDFASFASFDAFASFASDAADSCSDFADCVSGCFVADXCcadwavfsfarvf";
+
+    // Generate secure key from secret
+    private final Key key = Keys.hmacShaKeyFor(SECRET.getBytes());
+
+//    username from JWT token
+    public String getUsernameFromToken(String token) {
+        return getClaimFromToken(token, Claims::getSubject);
+    }
+
+    // ✅ Retrieve expiration date from JWT token
+    public Date getExpirationDateFromToken(String token) {
+        return getClaimFromToken(token, Claims::getExpiration);
+    }
+
+    // ✅ Generic method to extract claims
+    public <T> T getClaimFromToken(String token, Function<Claims, T> claimsResolver) {
+        final Claims claims = getAllClaimsFromToken(token);
+        return claimsResolver.apply(claims);
+    }
+
+    // ✅ Get all claims using secure key
+    private Claims getAllClaimsFromToken(String token) {
+        return Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).getBody();
+    }
+
+    // ✅ Check if token is expired
+    private Boolean isTokenExpired(String token) {
+        final Date expiration = getExpirationDateFromToken(token);
+        return expiration.before(new Date());
+    }
+
+    // ✅ Generate token for user
+    public String generateToken(UserDetails userDetails) {
+        Map<String, Object> claims = new HashMap<>();
+        return doGenerateToken(claims, userDetails.getUsername());
+    }
+
+    // ✅ Build JWT token
+    private String doGenerateToken(Map<String, Object> claims, String subject) {
+        return Jwts.builder()
+                .setClaims(claims)
+                .setSubject(subject)
+                .setIssuedAt(new Date(System.currentTimeMillis()))
+                .setExpiration(new Date(System.currentTimeMillis() + JWT_TOKEN_VALIDITY * 1000))
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    // ✅ Validate token
+    public Boolean validateToken(String token, UserDetails userDetails) {
+        final String username = getUsernameFromToken(token);
+        return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
+    }
+
+    public String getExpirationInSeconds() {
+        return String.valueOf(JWT_TOKEN_VALIDITY);
+    }
+}
+@Getter
+@Setter
+@NoArgsConstructor
+@Data
+@ToString
+public class JwtRequest {
+    private String username;
+    private String password;
+
+}
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+
+public class JwtResponse {
+    private String token;
+    private String username;
+    private String roles;
+    private String expiresIn;
+    private String message;
+
+}
+@Getter
+@Setter
+@NoArgsConstructor
+@Data
+@ToString
+public class RegisterRequest {
+    private String username;
+    private String password;
+}
+@Configuration
+public class MyConfig {
+
+    @Autowired
+    private CustomUserDetailsService customUserDetailsService;
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    /**
+     * Configure AuthenticationManager to use CustomUserDetailsService and PasswordEncoder
+     */
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration configuration) throws Exception {
+        return configuration.getAuthenticationManager();
+    }
+
+    /**
+     * AuthenticationProvider using DB-backed user details
+     */
+    @Bean
+    public DaoAuthenticationProvider authenticationProvider() {
+        DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+        provider.setUserDetailsService(customUserDetailsService);
+        provider.setPasswordEncoder(passwordEncoder());
+        return provider;
+    }
+}
+@Configuration
+public class SecurityConfig {
+
+    @Autowired
+    private JwtAuthenticationEntryPoint point;
+
+    @Autowired
+    private JwtAuthenticationFilter filter;
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+                .csrf(csrf -> csrf.disable())
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/auth/login","/auth/register").permitAll()
+                        .requestMatchers("/test").authenticated()
+                        .anyRequest().authenticated()
+                )
+                .exceptionHandling(ex -> ex.authenticationEntryPoint(point))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+
+        http.addFilterBefore(filter, UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+
+3 API GATEWAY: these names should be same as ms names to work and lb is name on eureka server, path is the endpoints
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true   # Enables Eureka-based routing
+      routes:
+        - id: authentication-service
+          uri: lb://AUTHENTICATION-SERVICE
+          predicates:
+            - Path=/auth/**
+        - id: order-service
+          uri: lb://ORDER-SERVICE
+          predicates:
+            - Path=/orders/**
+        - id: inventory-service
+          uri: lb://INVENTORY-SERVICE
+          predicates:
+            - Path=/products/**
+        - id: payment-service
+          uri: lb://PAYMENT-SERVICE
+          predicates:
+            - Path=/payments/**
+        - id: shipment-service
+          uri: lb://SHIPMENT-SERVICE
+          predicates:
+            - Path=/shipments/**
+to implement Jwt at api gateway dont use spring security dependency and follow this approach, NOTE: the secret key should be same in api gateway and auth service
+@Component
+public class AuthenticationFilter extends AbstractGatewayFilterFactory<AuthenticationFilter.Config> {
+
+    @Autowired
+    private RouteValidator validator;
+
+    @Autowired
+    private JwtUtil jwtUtil;
+
+    public AuthenticationFilter() {
+        super(Config.class);
+    }
+
+    @Override
+    public GatewayFilter apply(Config config) {
+        return (exchange, chain) -> {
+            if (validator.isSecured.test(exchange.getRequest())) {
+                if (!exchange.getRequest().getHeaders().containsKey(HttpHeaders.AUTHORIZATION)) {
+                    throw new RuntimeException("Missing Authorization header");
+                }
+
+                String authHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+                if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                    authHeader = authHeader.substring(7);
+                }
+
+                try {
+                    jwtUtil.validateToken(authHeader);
+                } catch (Exception e) {
+                    throw new RuntimeException("Unauthorized access: Invalid or expired token");
+                }
+            }
+            return chain.filter(exchange);
+        };
+    }
+
+    public static class Config {
+    }
+}
+@Component
+public class JwtUtil {
+
+    // SAME secret as Auth Service
+    public static final String SECRET = "afafasfafafasfasfasfafacasdasfasxASFACASDFACASDFASFASFDAFASFASDAADSCSDFADCVSGCFVADXCcadwavfsfarvf";
+
+    public void validateToken(final String token) {
+        Jwts.parserBuilder()
+                .setSigningKey(getSignKey())
+                .build()
+                .parseClaimsJws(token); // throws exception if invalid
+    }
+
+    private Key getSignKey() {
+        byte[] keyBytes = SECRET.getBytes(); // or use Base64 decode if encoded
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+}
+@Component
+public class RouteValidator {
+
+    public static final List<String> openApiEndpoints = List.of(
+            "/auth/register",
+            "/auth/login",
+            "/eureka"
+    );
+
+    public Predicate<ServerHttpRequest> isSecured =
+            request -> openApiEndpoints
+                    .stream()
+                    .noneMatch(uri -> request.getURI().getPath().contains(uri));
+}
+
+4 KAFKA INTEGRATION
+the first step is to create a dto which will be in all ms for the workflow like public class OrderEvent {
+    private String orderId;
+    private String status; // ORDER_CREATED, STOCK_RESERVED, STOCK_FAILED
+    private String userId;
+    private double amount;
+    private String productId;
+    private int quantity;
+    private String address;
+we will also create topics prior to the integration like order-events, inventory events
+we will give group id to all the ms like order-group, inventory-group
+we will use kafkatemplate to publish the event to the topics and we will use kafkalistener to consume those events, these will be used simulatenously in our ms
+@KafkaListener(topics = "order-events", groupId = "inventory-group")
+    public void consumeOrderEvent(String message) throws Exception {
+        OrderEvent event = objectMapper.readValue(message, OrderEvent.class);
+
+        if ("ORDER_CREATED".equals(event.getStatus())) {
+            Optional<Product> productOpt = productService.getProductById(event.getProductId());
+
+            if (productOpt.isPresent()) {
+                Product product = productOpt.get();
+
+                // ✅ Check stock availability
+                if (product.getStockQuantity() >= event.getQuantity()) {
+                    // Reserve stock
+                    product.setStockQuantity(product.getStockQuantity() - event.getQuantity());
+                    productService.saveProduct(product);
+
+                    event.setStatus("STOCK_RESERVED");
+                } else {
+                    event.setStatus("STOCK_FAILED");
+                }
+            } else {
+                event.setStatus("STOCK_FAILED");
+            }
+
+            // ✅ Publish inventory event (success or failure)
+            eventPublisher.publishInventoryEvent(event);
+        }
+    }
+ public void publishOrderCreatedEvent(Order order) throws JsonProcessingException {
+        OrderEvent event = new OrderEvent();
+        event.setOrderId(order.getOrderId());
+        event.setStatus("ORDER_CREATED");
+        event.setAmount(order.getTotalAmount());
+        event.setUserId(order.getUserId());
+        event.setProductId(order.getProductId());
+        event.setQuantity(order.getQuantity());
+        event.setAddress(order.getAddress());
+
+        String message = objectMapper.writeValueAsString(event);
+
+        // ✅ KafkaTemplate.send() now returns CompletableFuture
+        kafkaTemplate.send("order-events", message).whenComplete((result, ex) -> {
+            if (ex == null) {
+                RecordMetadata metadata = result.getRecordMetadata();
+                System.out.println("✅ Sent ORDER_CREATED event: " + message +
+                        " to partition: " + metadata.partition() + ", offset: " + metadata.offset());
+            } else {
+                System.err.println("❌ Failed to send ORDER_CREATED event: " + message +
+                        " | Error: " + ex.getMessage());
+            }
+        });
+    }
+
+Note:
+All the logic regarding the working will be written in the service layer and those functions will be used in other layers
+for database connection
+ datasource:
+    url: jdbc:mysql://127.0.0.1:3306/authentication_service
+    username: root
+    password: cricket123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+For unit testing use junit and Mockito 
